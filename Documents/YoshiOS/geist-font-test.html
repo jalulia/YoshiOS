@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>YoshiOS — Geist Font Test</title>
+<style>
+  @font-face { font-family: 'Geist Mono'; font-weight: 300; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Light.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 400; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Regular.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 500; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Medium.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 600; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-SemiBold.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 700; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Bold.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 300; font-style: italic;
+    src: url('fonts/GeistMono/webfonts/GeistMono-LightItalic.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Pixel'; font-weight: 400; font-style: normal;
+    src: url('fonts/GeistPixel/webfonts/GeistPixel-Square.woff2') format('woff2'); }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1C1A0E; color: #f0ad3b; padding: 40px; }
+  .row { margin-bottom: 32px; }
+  .label { font-family: 'Geist Mono', monospace; font-weight: 300; font-size: 10px;
+    letter-spacing: 0.15em; text-transform: uppercase; opacity: 0.4; margin-bottom: 8px; }
+  .sample { font-family: 'Geist Mono', monospace; margin-bottom: 4px; }
+  .pixel { font-family: 'Geist Pixel', monospace; }
+  .divider { border: none; border-top: 1px solid rgba(240,173,59,0.15); margin: 24px 0; }
+</style>
+</head>
+<body>
+
+<div class="row">
+  <div class="label">GeistPixel-Square — Brand / Boot / Mode Labels</div>
+  <div class="pixel" style="font-size: 26px;">YoshiOS</div>
+  <div class="pixel" style="font-size: 13px; margin-top: 8px;">HOME &nbsp; NAV &nbsp; MUSIC</div>
+</div>
+
+<hr class="divider">
+
+<div class="row">
+  <div class="label">GeistMono 600 (SemiBold) — Logo / Section Headers</div>
+  <div class="sample" style="font-weight: 600; font-size: 15px; letter-spacing: 0.08em;">YoshiOS</div>
+  <div class="sample" style="font-weight: 600; font-size: 8px; margin-top: 4px;">Charge &nbsp;&nbsp; Line / Load</div>
+</div>
+
+<div class="row">
+  <div class="label">GeistMono 500 (Medium) — Tier 1: Hero Values</div>
+  <div class="sample" style="font-weight: 500; font-size: 12px;">75% &nbsp;&nbsp; 86% &nbsp;&nbsp; N &nbsp;&nbsp; 72°</div>
+  <div class="sample" style="font-weight: 500; font-size: 28px; margin-top: 4px;">N</div>
+</div>
+
+<div class="row">
+  <div class="label">GeistMono 400 (Regular) — Tier 2: Data</div>
+  <div class="sample" style="font-weight: 400; font-size: 10px;">23 / 34 Ah &nbsp;&nbsp; +240 W / −144 W</div>
+  <div class="sample" style="font-weight: 400; font-size: 11px; margin-top: 4px;">Artist: Spiral &nbsp;&nbsp; Track: The Vernon Spring</div>
+</div>
+
+<div class="row">
+  <div class="label">GeistMono 300 (Light) — Tier 3: Captions / Units</div>
+  <div class="sample" style="font-weight: 300; font-size: 9px;">48% &nbsp; 3.2 L &nbsp; 102° &nbsp; 54%</div>
+  <div class="sample" style="font-weight: 300; font-size: 8px; font-style: italic; margin-top: 4px;">Audio Source &nbsp;&nbsp; 21:37 &nbsp;&nbsp; April 10, 2026</div>
+  <div class="sample" style="font-weight: 300; font-size: 7px; margin-top: 4px; letter-spacing: 0.1em;">FLATBUSH AVE &nbsp;&nbsp; Z14 &nbsp;&nbsp; ◎ AUTO</div>
+</div>
+
+<hr class="divider">
+
+<div class="row">
+  <div class="label">Weight Comparison — Same Size (11px)</div>
+  <div class="sample" style="font-weight: 300; font-size: 11px;">300 Light: 75% — 240W — N 004°</div>
+  <div class="sample" style="font-weight: 400; font-size: 11px;">400 Regular: 75% — 240W — N 004°</div>
+  <div class="sample" style="font-weight: 500; font-size: 11px;">500 Medium: 75% — 240W — N 004°</div>
+  <div class="sample" style="font-weight: 600; font-size: 11px;">600 SemiBold: 75% — 240W — N 004°</div>
+  <div class="sample" style="font-weight: 700; font-size: 11px;">700 Bold: 75% — 240W — N 004°</div>
+</div>
+
+</body>
+</html>

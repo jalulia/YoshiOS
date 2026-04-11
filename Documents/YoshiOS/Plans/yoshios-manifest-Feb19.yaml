@@ -1,0 +1,392 @@
+# ============================================================================
+# YoshiOS Project Manifest
+# 1983 VW Vanagon Westfalia — CRT Vehicle Computer
+# Last updated: 2026-02-19 (Session 4)
+# ============================================================================
+
+project:
+  name: YoshiOS
+  vehicle: 1983 VW Vanagon Westfalia
+  codename: Yoshi
+  status: prototyping
+
+
+# ============================================================================
+# DISPLAY HARDWARE
+# ============================================================================
+
+display:
+  source: 1986 Magnavox Videowriter 350
+  type: 10" amber CRT
+  phosphor: P3 (amber)
+  resolution:
+    width: 640          # target composite resolution
+    height: 200         # target composite resolution
+  color_depth: 1-bit    # monochrome, dithered
+  refresh_rate: 60      # Hz
+  drive_method: direct  # RP2040 direct-drive (Route C)
+
+
+# ============================================================================
+# MICROCONTROLLERS
+# ============================================================================
+
+mcu:
+  rp2040:
+    role: CRT direct-drive + USB frame receiver
+    board: TBD                # specific RP2040 board (Pico, Pico W, etc.)
+    firmware: TBD
+    connections:
+      usb:
+        to: compositor_pc
+        protocol: USB-serial
+        baud: TBD              # frame streaming baud rate
+        payload: 1-bit bitmap  # 640x200 = 16,000 bytes/frame
+        frame_rate: 60         # target fps
+      crt:
+        h_sync: TBD            # GPIO pin
+        v_sync: TBD            # GPIO pin
+        video_out: TBD         # GPIO pin
+
+  esp32:
+    role: Sensor hub + Victron BLE bridge
+    board: TBD                 # ESP32 dev board (must have BLE, NOT ESP32-S2)
+    firmware: TBD
+    connections:
+      usb:
+        to: compositor_pc
+        protocol: USB-serial
+        baud: 115200           # standard, may adjust
+        payload: JSON
+        update_rate_ms: 1000   # target sensor update interval
+    sensors:
+      imu:
+        type: TBD              # MPU-6050? BNO055?
+        bus: I2C
+        pins:
+          sda: TBD
+          scl: TBD
+        data: [pitch, roll, heading]
+      temperature:
+        type: TBD              # AHT20? BME280?
+        bus: I2C               # likely shared with IMU
+        data: [temperature_c]
+      humidity:
+        type: TBD
+        bus: I2C
+        data: [humidity_pct]
+    victron_ble:
+      # BLE advertisement passive listener — no pairing required
+      # Keys extracted from VictronConnect app SQLite database
+      devices: []              # populated below in victron section
+
+  teensy:
+    role: USB-HID input controller
+    board: Teensy 4.1
+    firmware: TBD
+    connections:
+      usb:
+        to: compositor_pc
+        protocol: USB-HID
+    inputs:
+      encoder:
+        type: rotary encoder with push
+        pins:
+          a: TBD
+          b: TBD
+          button: TBD
+      buttons:
+        count: TBD
+        pins: []
+
+
+# ============================================================================
+# VICTRON ENERGY SYSTEM
+# ============================================================================
+
+victron:
+  # ACTION: Check device models in Yoshi, update this section
+  # ACTION: Enable "Instant Readout via Bluetooth" on each device
+  #         (VictronConnect → device → gear icon → Product Info → toggle)
+  # ACTION: Extract advertisement encryption keys from VictronConnect SQLite DB
+  #         macOS: ~/Library/Containers/com.victronenergy.victronconnect.mac/
+  #                Data/Library/Application Support/Victron Energy/
+  #                Victron Connect/<hash>.sqlite
+  #         Query: SELECT address, advertisementKey FROM advertisementKeys
+  #                INNER JOIN macAddresses
+  #                ON advertisementKeys.macAddress == macAddresses.macAddress
+
+  integration_method: ble_advertising  # passive BLE via ESP32
+  fallback_method: ve_direct_usb       # $35 cable per device if BLE fails
+
+  devices:
+    battery_monitor:
+      product: SmartShunt
+      model: TBD                # e.g., SmartShunt 500A/50mV
+      mac_address: TBD
+      advertisement_key: TBD   # 32-char hex from VictronConnect DB
+      has_ve_direct: true
+      has_bluetooth: true
+      ble_fields:
+        - voltage              # battery voltage (V)
+        - current              # charge/discharge current (A)
+        - soc                  # state of charge (%)
+        - consumed_ah          # consumed amp-hours
+        - remaining_mins       # time to go
+        - temperature          # if aux input configured
+        - alarm_states         # high/low voltage, SOC, temp
+
+    solar_charger:
+      product: SmartSolar MPPT
+      model: TBD                # e.g., SmartSolar MPPT 100/30
+      mac_address: TBD
+      advertisement_key: TBD
+      has_ve_direct: true
+      has_bluetooth: true
+      ble_fields:
+        - battery_voltage      # output voltage to battery (V)
+        - battery_current      # output current to battery (A)
+        - pv_power             # solar panel input power (W)
+        - yield_today          # energy harvested today (Wh)
+        - load_current         # load output current (A)
+        - charge_state         # off / bulk / absorption / float
+
+    inverter_or_charger:
+      product: TBD             # Phoenix Inverter? MultiPlus? Orion?
+      model: TBD
+      mac_address: TBD
+      advertisement_key: TBD
+      has_ve_direct: TBD
+      has_bluetooth: TBD
+      ble_fields: []           # depends on device type
+
+  reference_libraries:
+    python_ble:
+      name: victron-ble
+      repo: https://github.com/keshavdv/victron-ble
+      notes: "Clean Python API, works on Win/Mac/Linux"
+    esphome:
+      name: esphome-victron_ble
+      repo: https://github.com/Fabian-Schmidt/esphome-victron_ble
+      notes: "ESP32 ESPHome component, production quality"
+    arduino_esp32:
+      name: Victron_BLE_Advertising_example
+      repo: https://github.com/hoberman/Victron_BLE_Advertising_example
+      notes: "Standalone ESP32 example, good starting point"
+    multi_protocol:
+      name: birdie1/victron
+      repo: https://github.com/birdie1/victron
+      notes: "BLE + serial + MQTT, Home Assistant support"
+
+
+# ============================================================================
+# AUDIO SYSTEM
+# ============================================================================
+
+audio:
+  amplifier:
+    model: Kicker KEY 200.4
+    channels: 4
+    interface: TBD            # how compositor knows what's playing
+  source_integration:
+    primary: spotify
+    spotify:
+      method: web_api         # Spotify Web API (REST)
+      auth: oauth2
+      scopes:
+        - user-read-playback-state
+        - user-read-currently-playing
+      data:
+        - track_name
+        - artist_name
+        - album_art           # not used on 1-bit CRT, but available
+        - progress_ms
+        - duration_ms
+        - is_playing
+      poll_interval_ms: 3000  # how often to check playback state
+
+
+# ============================================================================
+# GPS / NAVIGATION
+# ============================================================================
+
+gps:
+  receiver:
+    model: TBD               # e.g., GlobalSat BU-353-S4
+    interface: USB-serial
+    protocol: NMEA 0183
+    baud: 4800                # standard NMEA baud (some devices use 9600)
+  software:
+    windows: direct NMEA parsing via serial
+    linux_alternative: gpsd   # daemon on port 2947, JSON output
+  data:
+    - latitude
+    - longitude
+    - speed_knots
+    - heading_true
+    - altitude_m
+    - fix_quality
+    - satellites_in_use
+
+map:
+  renderer: MapLibre GL JS
+  tile_source: TBD           # OpenStreetMap, Protomaps, offline MBTiles?
+  style:
+    palette: amber_monochrome
+    foreground: "#D4A017"     # amber
+    background: "#000000"     # black
+    roads: TBD
+    water: TBD
+    labels: TBD
+  offline_support: TBD        # MBTiles for areas without cell service?
+
+
+# ============================================================================
+# COMPOSITOR PC
+# ============================================================================
+
+compositor:
+  platform: windows           # user's strong suit, no Linux-only dependencies
+  hardware:
+    form_factor: fanless mini PC
+    cpu: TBD                  # e.g., Intel N100
+    ram: TBD                  # 8GB likely sufficient
+    usb_ports_needed: 4       # RP2040, ESP32, GPS, spare
+    storage: TBD
+  architecture:
+    backend: node_js          # aggregates all data sources
+    frontend: browser         # MapLibre + UI compositing
+    rendering:
+      target: 640x200 @ 1-bit
+      dither_method: TBD      # Floyd-Steinberg? Ordered? Threshold?
+      frame_capture: TBD      # headless Chromium screenshot? Canvas API?
+  data_sources:
+    - name: victron
+      via: esp32_usb_serial
+      format: JSON
+    - name: sensors
+      via: esp32_usb_serial   # same ESP32, same serial stream
+      format: JSON
+    - name: gps
+      via: usb_serial
+      format: NMEA
+    - name: spotify
+      via: web_api
+      format: JSON
+    - name: controls
+      via: teensy_usb_hid
+      format: HID reports
+
+
+# ============================================================================
+# SERIAL PROTOCOLS
+# ============================================================================
+
+protocols:
+  esp32_to_pc:
+    transport: USB-serial
+    baud: 115200
+    format: newline-delimited JSON
+    schema:
+      # Example payload — finalize after confirming Victron devices
+      example: |
+        {
+          "ts": 1708300800,
+          "sensors": {
+            "pitch": 2.1,
+            "roll": -0.5,
+            "heading": 247.3,
+            "temp_c": 22.4,
+            "humidity_pct": 58
+          },
+          "victron": {
+            "battery": {
+              "voltage": 12.87,
+              "current": -1.45,
+              "soc": 75.0,
+              "remaining_mins": 480
+            },
+            "solar": {
+              "pv_power": 145,
+              "battery_current": 8.2,
+              "yield_today_wh": 890,
+              "charge_state": "bulk"
+            },
+            "inverter": {}
+          }
+        }
+
+  pc_to_rp2040:
+    transport: USB-serial
+    baud: TBD                 # needs to support 16KB/frame × 60fps = 960KB/s
+    format: binary
+    frame_size_bytes: 16000   # 640 × 200 / 8 = 16,000 bytes per 1-bit frame
+    sync_method: TBD          # frame header bytes? vsync signal?
+
+
+# ============================================================================
+# UI DESIGN TOKENS
+# ============================================================================
+
+design:
+  font:
+    family: Bitcount Grid Single
+    source: https://fonts.google.com/specimen/Bitcount+Grid+Single
+    weights: [400, 500, 700]  # variable axis 100-900 available
+    fallback: monospace
+  colors:
+    amber: "#D4A017"
+    background: "#000000"
+  strokes:
+    van_body: 1.3             # px, non-scaling-stroke
+    van_structural: 2.0       # px, heavy interior lines
+    battery_icon: 1.0         # px
+    compass: 1.3              # px, matches van body
+    ground_line: 1.0          # px, solid
+    ground_dashed: 1.0        # px, rotating dashed line
+  prototype:
+    current_version: v4
+    file: yoshios-prototype-v4.jsx
+    ia_document: yoshios-ia-v3.md
+
+
+# ============================================================================
+# OPEN QUESTIONS — resolve these next session
+# ============================================================================
+
+open_questions:
+  - id: Q1
+    priority: high
+    question: "What are the exact Victron device models?"
+    action: "Check inside Yoshi for model numbers on SmartShunt, SmartSolar MPPT, and inverter/charger"
+    blocks: [victron.devices, esp32.victron_ble]
+
+  - id: Q2
+    priority: high
+    question: "Is Instant Readout via Bluetooth enabled on all Victron devices?"
+    action: "VictronConnect → each device → gear → Product Info → check toggle. Requires firmware v3.61+"
+    blocks: [victron.devices]
+
+  - id: Q3
+    priority: medium
+    question: "What energy data should appear on the dashboard?"
+    action: "Decide: just battery % + solar %, or also PV voltage, yield, inverter AC output?"
+    blocks: [design, protocols.esp32_to_pc.schema]
+
+  - id: Q4
+    priority: medium
+    question: "Do you have a spare ESP32 dev board?"
+    action: "Needs classic ESP32 with BLE (not ESP32-S2). $7 Amazon boards work fine."
+    blocks: [mcu.esp32]
+
+  - id: Q5
+    priority: medium
+    question: "GPS receiver — do you have one?"
+    action: "USB GPS puck like GlobalSat BU-353-S4 works on Windows, outputs NMEA over serial"
+    blocks: [gps.receiver]
+
+  - id: Q6
+    priority: low
+    question: "What mini PC for the compositor?"
+    action: "Fanless Intel N100, 4+ USB ports, 8GB RAM. No GPU needed for 640×200."
+    blocks: [compositor.hardware]

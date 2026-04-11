@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>YoshiOS</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  @font-face { font-family: 'Geist Mono'; font-weight: 300; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Light.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 300; font-style: italic;
+    src: url('fonts/GeistMono/webfonts/GeistMono-LightItalic.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 400; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Regular.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 500; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-Medium.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Mono'; font-weight: 600; font-style: normal;
+    src: url('fonts/GeistMono/webfonts/GeistMono-SemiBold.woff2') format('woff2'); }
+  @font-face { font-family: 'Geist Pixel'; font-weight: 400; font-style: normal;
+    src: url('fonts/GeistPixel/webfonts/GeistPixel-Square.woff2') format('woff2'); }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0A0A06; overflow: hidden; height: 100vh;
+    display: flex; align-items: center; justify-content: center; cursor: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── Color hierarchy ───
+const AMBER_HI  = "#ffd978";
+const AMBER     = "#f0ad3b";
+const AMBER_MID = "#c48a2a";
+const AMBER_DIM = "#6B5510";
+const BG = "#1C1A0E";
+const BG_FILL = "#3a3328";
+const PX = "'Geist Pixel', monospace";
+const MONO = "'Geist Mono', monospace";
+const W = 832, H = 300;
+const LEFT_PANEL_W = 280, GROUND_Y = 197, AUDIO_Y = 222;
+const REAR_VAN_CX = 405, SIDE_VAN_CX = 660;
+
+// ═══ TEXTURAL DITHER — BG_FILL color, reads only against bright elements ═══
+const BAYER8 = [
+  [0,48,12,60,3,51,15,63],[32,16,44,28,35,19,47,31],
+  [8,56,4,52,11,59,7,55],[40,24,36,20,43,27,39,23],
+  [2,50,14,62,1,49,13,61],[34,18,46,30,33,17,45,29],
+  [10,58,6,54,9,57,5,53],[42,26,38,22,41,25,37,21],
+];
+const DitherWipe = ({ active, onDone }) => {
+  const canvasRef = useRef(null), rafRef = useRef(null), startRef = useRef(null);
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current; if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const cw = canvas.width, ch = canvas.height;
+    const cellSize = 2;
+    const cols = Math.ceil(cw/cellSize), rows = Math.ceil(ch/cellSize);
+    const duration = 280;
+    const bandHeight = 30;
+    startRef.current = performance.now();
+    const animate = (now) => {
+      const t = Math.min((now - startRef.current) / duration, 1);
+      ctx.clearRect(0, 0, cw, ch);
+      const bandCenter = t * (ch + bandHeight) - bandHeight/2;
+      const bandTop = bandCenter - bandHeight/2;
+      const bandBot = bandCenter + bandHeight/2;
+      // BG_FILL color — only visible where it darkens bright amber elements
+      ctx.fillStyle = '#3a3328';
+      for (let cy = Math.max(0, Math.floor(bandTop/cellSize)); cy < Math.min(rows, Math.ceil(bandBot/cellSize)); cy++) {
+        const pixelY = cy * cellSize;
+        const dist = Math.abs(pixelY - bandCenter) / (bandHeight/2);
+        const edgeThreshold = dist * 64;
+        for (let cx = 0; cx < cols; cx++) {
+          if (BAYER8[cy%8][cx%8] >= edgeThreshold) {
+            ctx.fillRect(cx*cellSize, pixelY, cellSize, cellSize);
+          }
+        }
+      }
+      if (t < 1) rafRef.current = requestAnimationFrame(animate);
+      else { ctx.clearRect(0, 0, cw, ch); if (onDone) onDone(); }
+    };
+    rafRef.current = requestAnimationFrame(animate);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [active, onDone]);
+  if (!active) return null;
+  return <canvas ref={canvasRef} width={W*2} height={H*2}
+    style={{position:'absolute',inset:0,width:'100%',height:'100%',zIndex:50,pointerEvents:'none'}} />;
+};
+
+let liveData = {}, mqttConnected = false;
+if (window.yoshios) {
+  window.yoshios.onMqttStatus((s) => { mqttConnected = s === 'connected'; });
+  window.yoshios.onMqttData(({ topic, value }) => {
+    if (topic.includes('/Soc')) liveData.batPct = Math.round(value);
+    if (topic.includes('/Yield/Power')) { liveData.solW = Math.round(value); liveData.solPct = Math.min(100, Math.round((value/400)*100)); }
+    if (topic.includes('/Dc/0/Voltage')) liveData.voltage = value;
+    if (topic.includes('/Dc/0/Power')) liveData.loadW = Math.round(value);
+  });
+}
+const useSimData = (sub) => {
+  const [d, setD] = useState({
+    time:"10:37", date:"August 23, 2025", batPct:75, solPct:86, chAh:23, totAh:34,
+    solW:240, loadW:-144, oilPct:48, oilL:3.2, engF:102, hum:54,
+    roll:6.9, pitch:-4.2, hdg:"N", hdgDeg:4, ambF:72,
+    artist:"Spiral", track:"The Vernon Spring", src:"Spotify",
+    pos:32, dur:165, vol:28, playing:true,
+  });
+  useEffect(() => {
+    const iv = setInterval(() => setD(p => {
+      const now = new Date();
+      const base = { ...p,
+        time: now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:false}),
+        date: now.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}),
+        pos: p.playing && sub.spotify ? (p.pos+1) % p.dur : p.pos,
+        roll: sub.sensors ? +(Math.sin(Date.now()/4000)*8).toFixed(1) : 0,
+        pitch: sub.sensors ? +(Math.sin(Date.now()/5000+1)*5).toFixed(1) : 0,
+        hdgDeg: sub.sensors ? (Date.now()/80)%360 : 0,
+        hdg: sub.sensors ? ["N","NE","E","SE","S","SW","W","NW"][Math.floor(((Date.now()/80)%360)/45)] : "--",
+      };
+      if (mqttConnected && sub.victron) {
+        base.batPct=liveData.batPct??p.batPct; base.solPct=liveData.solPct??p.solPct;
+        base.solW=liveData.solW??p.solW; base.loadW=liveData.loadW!=null?-Math.abs(liveData.loadW):p.loadW;
+      } else if (sub.victron) {
+        base.batPct=75+Math.round(Math.sin(Date.now()/10000)*3); base.solPct=86+Math.round(Math.sin(Date.now()/12000)*4);
+        base.solW=240+Math.round(Math.sin(Date.now()/8000)*20); base.loadW=-144+Math.round(Math.sin(Date.now()/9000)*10);
+      } else { base.batPct=null;base.solPct=null;base.solW=null;base.loadW=null; }
+      return base;
+    }), 1000);
+    return () => clearInterval(iv);
+  }, [sub.spotify, sub.victron, sub.sensors]);
+  return d;
+};
+const useWaveform = (on) => {
+  const [pts, setPts] = useState([]);
+  useEffect(() => {
+    if (!on) { setPts([]); return; }
+    const iv = setInterval(() => {
+      const a=[],t=Date.now()/200;
+      for(let i=0;i<80;i++) a.push({x:i, y:Math.sin((i+t)*0.3)*8+Math.sin((i+t)*0.7)*4+Math.sin((i+t)*1.3)*2+(Math.random()-0.5)*3});
+      setPts(a);
+    }, 80);
+    return () => clearInterval(iv);
+  }, [on]);
+  return pts;
+};
+const useFeedback = () => {
+  const [flash,setFlash]=useState(null);const [volP,setVolP]=useState(false);const [srcF,setSrcF]=useState(null);
+  const trigger = useCallback((t,v) => {
+    if(t==="screen"){setFlash(v);setTimeout(()=>setFlash(null),500);}
+    if(t==="volume"){setVolP(true);setTimeout(()=>setVolP(false),400);}
+    if(t==="source"){setSrcF(v);setTimeout(()=>setSrcF(null),600);}
+  }, []);
+  return { flash, volP, srcF, trigger };
+};
+const fmtT = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+
+const Num = ({x,y,val,maxCh=5,size=10,color=AMBER_HI,anchor="start",weight=400,font=MONO}) => {
+  const chW=size*0.6, w=maxCh*chW;
+  const ax=anchor==="end"?x:anchor==="middle"?x-w/2:x;
+  return <g><rect x={ax} y={y-size+1} width={w} height={size+2} fill="none" stroke="none" />
+    <text x={x} y={y} fill={color} fontSize={size} fontFamily={font} fontWeight={weight}
+      textAnchor={anchor} letterSpacing="0.03em" style={{fontVariantNumeric:"tabular-nums"}}>{val}</text></g>;
+};
+
+// ═══ Yoshi Egg — very faint pixel art, slow gentle pulse ═══
+const YoshiEgg = ({x, y}) => {
+  // Classic Yoshi egg: oval with spots, rendered in minimal pixel blocks
+  // Each "pixel" is 2x2 at this scale
+  const p = 2; // pixel size
+  const c = AMBER_DIM; // very faint
+  // Egg outline (oval ~12x16 pixels)
+  const outline = [
+    [4,0],[5,0],[6,0],[7,0],
+    [3,1],[8,1],
+    [2,2],[9,2],
+    [1,3],[10,3],
+    [1,4],[10,4],
+    [0,5],[11,5],
+    [0,6],[11,6],
+    [0,7],[11,7],
+    [0,8],[11,8],
+    [1,9],[10,9],
+    [1,10],[10,10],
+    [2,11],[9,11],
+    [3,12],[8,12],
+    [4,13],[5,13],[6,13],[7,13],
+  ];
+  // Spots (the classic green dots — here just slightly brighter)
+  const spots = [
+    [4,4],[5,4],[4,5],[5,5], // top spot
+    [7,7],[8,7],[7,8],[8,8], // middle spot
+    [3,9],[4,9],[3,10],[4,10], // bottom spot
+  ];
+  return <g transform={`translate(${x},${y})`} opacity={0.15}>
+    <animateTransform attributeName="transform" type="translate" values={`${x},${y};${x},${y-1};${x},${y}`} dur="4s" repeatCount="indefinite" additive="replace" />
+    <animate attributeName="opacity" values="0.12;0.2;0.12" dur="6s" repeatCount="indefinite" />
+    {outline.map((px,i) => <rect key={`o${i}`} x={px[0]*p} y={px[1]*p} width={p} height={p} fill={c} />)}
+    {spots.map((px,i) => <rect key={`s${i}`} x={px[0]*p} y={px[1]*p} width={p} height={p} fill={AMBER_MID} />)}
+  </g>;
+};
+
+const BarGauge = ({val,x,y,w=20,h=90,off}) => {
+  const segs=10,filled=val!=null?Math.round((val/100)*segs):0,segH=h/segs;
+  return <g>{Array.from({length:segs},(_,i)=>{const sy=y+(segs-1-i)*segH,f=!off&&i<filled;
+    return <rect key={i} x={x} y={sy} width={w} height={segH-2} fill={f?AMBER:"none"}
+      stroke={off?AMBER_DIM:(f?AMBER:AMBER_DIM)} strokeWidth={0.5} strokeDasharray={off?"2 2":"none"} />;})}</g>;
+};
+const BatteryIcon = ({x,y}) => <g>
+  <rect x={x} y={y} width={20} height={10} fill="none" stroke={AMBER} strokeWidth={0.6} rx={1} />
+  <rect x={x+20} y={y+3} width={2.5} height={4} fill={AMBER} />
+  <rect x={x+2.5} y={y+2} width={3.5} height={6} fill={AMBER} />
+  <rect x={x+7} y={y+2} width={3.5} height={6} fill={AMBER} />
+  <rect x={x+11.5} y={y+2} width={3.5} height={6} fill={AMBER} />
+</g>;
+const SunIcon = ({x,y}) => <g><circle cx={x+7} cy={y+7} r={3} fill="none" stroke={AMBER} strokeWidth={0.6} />
+  {[0,45,90,135,180,225,270,315].map(a=>{const r=a*Math.PI/180;
+    return <line key={a} x1={x+7+Math.cos(r)*4.5} y1={y+7+Math.sin(r)*4.5} x2={x+7+Math.cos(r)*6.5} y2={y+7+Math.sin(r)*6.5} stroke={AMBER} strokeWidth={0.6} />;})}</g>;
+const OilIcon = ({x,y}) => <g transform={`translate(${x},${y})`}>
+  <rect x={0} y={0} width={14} height={18} fill="none" stroke={AMBER_MID} strokeWidth={0.5} rx={1} />
+  <path d="M7,3 Q7,6 4.5,8.5 Q3,10 3,12 Q3,15 7,15 Q11,15 11,12 Q11,10 9.5,8.5 Q7,6 7,3" fill="none" stroke={AMBER_MID} strokeWidth={0.4} /></g>;
+const TempIcon = ({x,y}) => <g transform={`translate(${x},${y})`}>
+  <rect x={0} y={0} width={14} height={22} fill="none" stroke={AMBER_MID} strokeWidth={0.5} rx={1} />
+  <circle cx={7} cy={16} r={2.5} fill="none" stroke={AMBER_MID} strokeWidth={0.4} />
+  <circle cx={7} cy={16} r={1.2} fill={AMBER_MID} />
+  <line x1={7} y1={14} x2={7} y2={5} stroke={AMBER_MID} strokeWidth={0.6} /></g>;
+const SpeakerIcon = ({x,y,vol}) => <g>
+  <polygon points={`${x},${y+4} ${x+4},${y+4} ${x+8},${y} ${x+8},${y+10} ${x+4},${y+6} ${x},${y+6}`} fill={AMBER} />
+  {vol>10&&<path d={`M${x+10} ${y+2} Q${x+13} ${y+5} ${x+10} ${y+8}`} fill="none" stroke={AMBER} strokeWidth={0.5} />}
+  {vol>40&&<path d={`M${x+12} ${y} Q${x+16} ${y+5} ${x+12} ${y+10}`} fill="none" stroke={AMBER} strokeWidth={0.5} />}</g>;
+const Waveform = ({pts,x,y,w,h}) => {
+  if(!pts.length) return <line x1={x} y1={y+h/2} x2={x+w} y2={y+h/2} stroke={AMBER_DIM} strokeWidth={0.3} />;
+  const sx=w/80;
+  return <path d={pts.map((p,i)=>`${i===0?"M":"L"} ${x+p.x*sx} ${y+h/2+p.y*(h/30)}`).join(" ")} fill="none" stroke={AMBER} strokeWidth={1} />;
+};
+const AlertBar = ({sub}) => {
+  const d=[];if(!sub.victron)d.push("PWR");if(!sub.gps)d.push("GPS");if(!sub.sensors)d.push("SENS");if(!sub.spotify)d.push("AUD");
+  if(d.length<2)return null;
+  return <g><rect x={250} y={2} width={332} height={12} fill={BG} stroke={AMBER} strokeWidth={0.4} />
+    <text x={416} y={10} fill={AMBER_HI} fontSize="7" fontFamily={PX} textAnchor="middle" letterSpacing="0.15em">⚠ {d.join(" + ")} OFFLINE</text></g>;
+};
+const BootScreen = ({pcState}) => {
+  const letters = ["Y","O","S","H","I","_","O","S"];
+  const boxW=28,boxH=28,gap=4;const totalW=letters.length*(boxW+gap)-gap;
+  const startX=(W-totalW)/2, centerY=118;
+  return <g>
+    <line x1={startX-20} y1={centerY-boxH/2-14} x2={startX+totalW+20} y2={centerY-boxH/2-14} stroke={AMBER_DIM} strokeWidth={0.3} />
+    {letters.map((ch,i) => {const x=startX+i*(boxW+gap);const isU=ch==="_";
+      return <g key={i}><rect x={x} y={centerY-boxH/2} width={boxW} height={boxH}
+        fill="none" stroke={isU?AMBER_DIM:AMBER} strokeWidth={isU?0.3:0.5} />
+        <text x={x+boxW/2} y={centerY+7} fill={isU?AMBER_DIM:AMBER_HI}
+          fontSize="18" fontFamily={PX} textAnchor="middle">{ch}</text></g>;})}
+    <line x1={startX-20} y1={centerY+boxH/2+10} x2={startX+totalW+20} y2={centerY+boxH/2+10} stroke={AMBER_DIM} strokeWidth={0.3} />
+    <text x={startX-10} y={centerY+boxH/2+26} fill={AMBER_MID} fontSize="7.5" fontFamily={PX} letterSpacing="0.16em">
+      {pcState==="booting"?"NET: LOCAL    MEM: 640K OK    STATUS: BOOTING":"NET: —    MEM: —    STATUS: WAITING"}</text>
+    {pcState==="booting"&&<g><rect x={W/2-50} y={centerY+boxH/2+38} width={100} height={2} fill="none" stroke={AMBER_DIM} strokeWidth={0.3} />
+      <rect x={W/2-50} y={centerY+boxH/2+38} width={50} height={2} fill={AMBER}>
+        <animate attributeName="width" values="10;90;10" dur="2.5s" repeatCount="indefinite" /></rect></g>}
+  </g>;
+};
+
+const VanRear = ({off}) => {
+  const c=off?AMBER_DIM:AMBER_MID; const s={fill:"none",stroke:c,strokeMiterlimit:10,strokeWidth:0.8,vectorEffect:"non-scaling-stroke"};
+  return <g>
+    <rect {...s} x="21.79" y="180.55" width="44.03" height="16.58" />
+    <path {...s} d="M45.24,230.88v46.89c0,1.58-1.28,2.86-2.86,2.86h-20.02c-1.58,0-2.86-1.28-2.86-2.86v-49.18" />
+    <path {...s} d="M225.36,230.88v46.89c0,1.58,1.28,2.86,2.86,2.86h20.02c1.58,0,2.86-1.28,2.86-2.86v-49.18" />
+    <rect {...s} x="113.29" y="180.55" width="44.03" height="21.16" />
+    <rect {...s} x="204.78" y="180.55" width="44.03" height="16.58" />
+    <path {...s} d="M224.67,117.65H45.94c-2.74,0-4.81-2.49-4.3-5.18l10.94-55.3c.39-2.07,2.2-3.57,4.3-3.57h156.86c2.1,0,3.91,1.5,4.3,3.57l10.94,55.3c.51,2.69-1.56,5.18-4.3,5.18Z" />
+    <path {...s} d="M135.87,39.32c-18.01,0-63.19-.01-79.2,1.7-16.01,1.72-17.73,10.29-18.87,13.15s-20.59,76.63-20.59,76.63l1.14,4v10.86l-2.29,2.29v32.59s-1.72,7.44-1.72,12.02,2.86,16.58,2.86,16.58l-2.29,1.7v11.45s.57,6.29,5.15,6.29h9.95l42.09,6.29h63.47" />
+    <path {...s} d="M135.3,39.32c18.01,0,63.19-.01,79.2,1.7,16.01,1.72,17.73,10.29,18.87,13.15,1.14,2.86,20.59,76.63,20.59,76.63l-1.14,4v10.86s2.29,2.29,2.29,2.29v32.59s1.72,7.44,1.72,12.02-2.86,16.58-2.86,16.58l2.29,1.72v11.44s-.57,6.29-5.15,6.29c-4.57,0-9.95,0-9.95,0l-42.09,6.29h-63.47" />
+    <line {...s} x1="17.22" y1="209.15" x2="253.96" y2="209.15" />
+    <line {...s} x1="18.36" y1="134.81" x2="252.81" y2="134.81" />
+    <line {...s} x1="252.81" y1="145.67" x2="18.36" y2="145.67" />
+    <path {...s} d="M135.59,205.71H21.22l.57-60.61v-10.86l24.02-85.2s2.29-5.15,6.09-7.21" />
+    <path {...s} d="M135.02,205.71h114.37l-.57-60.61v-10.86l-23.98-85.2s-2.29-5.15-6.09-7.21" />
+    <line {...s} x1="21.79" y1="180.55" x2="249.38" y2="180.55" />
+    <line {...s} x1="25.22" y1="173.69" x2="245.95" y2="173.69" />
+    <line {...s} x1="25.22" y1="228.59" x2="245.95" y2="228.59" />
+    <line {...s} x1="21.79" y1="201.71" x2="249.38" y2="201.71" />
+    <line {...s} x1="25.22" y1="167.97" x2="245.95" y2="167.97" />
+    <polyline {...s} points="135.59 19.87 48.67 19.87 41.56 47.09" />
+    <polyline {...s} points="135.59 19.87 222.51 19.87 229.61 47.09" />
+    <rect {...s} x="47.53" y="9.01" width="174.98" height="8.01" />
+    <path {...s} d="M182.48,9.01h-94.92v-1.35c0-3.67,2.98-6.65,6.65-6.65h81.62c3.67,0,6.65,2.98,6.65,6.65v1.35Z" />
+  </g>;
+};
+const VanSide = ({off}) => {
+  const c=off?AMBER_DIM:AMBER_MID; const s={fill:"none",stroke:c,strokeMiterlimit:10,strokeWidth:0.8,vectorEffect:"non-scaling-stroke"};
+  const sf={fill:off?"none":BG_FILL,stroke:c,strokeMiterlimit:10,strokeWidth:0.8,vectorEffect:"non-scaling-stroke"};
+  const fl={fill:off?AMBER_DIM:AMBER_MID};
+  return <g>
+    <path {...s} d="M81.26,18.15h43.66l5.52,5.15h105.5v-5.15h18.3v5.15h147.98l3.04-5.15h114.6l23.44,20.01v4.03l54.9,69.16h7.49l20.25,23.73-2.57,45.75h-18.53c-3.21,0-6.17,1.74-7.74,4.54l-8.33,14.9h30.31l-.57,4.86h14.01v12.01s-.57,4.57-2.86,5.72-32.59,6.29-32.59,6.29h-8.01l.29-4.86-60.33,8.29-17.14-36.09c-2.63-5.55-8.22-9.08-14.36-9.08h-35.12c-1.99,0-11.7,1.97-14.92,4.86-10.79,9.67-17.25,23.28-18.22,37.74l-.6,8.86h-228.45l-5.44-22.78c-2.47-10.33-8.56-19.51-17.33-25.51-2.79-1.91-10-3.18-11.83-3.18h-38.51c-2.05,0-5.26.96-8.62,2.42-7.72,3.38-13.54,10.03-15.97,18.1l-4.96,16.93h-46.32v1.72H18.64v-18.87h20.01l-11.72-63.76h1.72v-10.86h-2.29v-1.72L81.26,18.15Z" />
+    <line {...s} x1="543.29" y1="42.2" x2="70.11" y2="42.2" />
+    <path {...s} d="M476.96,191.99c-24.32,0-44.03,19.71-44.03,44.03s19.71,44.03,44.03,44.03,44.03-19.71,44.03-44.03-19.71-44.03-44.03-44.03ZM476.96,262.9c-14.84,0-26.88-12.03-26.88-26.88s12.03-26.88,26.88-26.88,26.88,12.03,26.88,26.88-12.03,26.88-26.88,26.88Z" />
+    <path {...s} d="M147.02,191.99c-24.32,0-44.03,19.71-44.03,44.03s19.71,44.03,44.03,44.03,44.03-19.71,44.03-44.03-19.71-44.03-44.03-44.03ZM147.02,262.9c-14.84,0-26.88-12.03-26.88-26.88s12.03-26.88,26.88-26.88,26.88,12.03,26.88,26.88-12.03,26.88-26.88,26.88Z" />
+    <path {...s} d="M625.62,139.42h-10.88s-4.26,1.79-4.26,5.44v19.86s0,4.11,4.72,4.11h9.01l1.41-29.42Z" />
+    <path {...s} d="M616.39,139.42c2.39,5.18,2.81,11.32,2.81,14.24s-.42,9.18-2.42,15.17" />
+    <polyline {...s} points="241.08 42.2 241.08 234.88 407.51 234.88 407.51 42.2" />
+    <rect {...s} x="249.95" y="53.04" width="146.39" height="55.47" rx="9.31" ry="9.31" />
+    <path {...s} d="M228.04,108.5h-118.74c-3.71,0-6.36-3.58-5.29-7.13l10.94-44.42c.71-2.33,2.85-3.92,5.29-3.92h107.81c2.94,0,5.32,2.38,5.32,5.32v44.82c0,2.94-2.38,5.32-5.32,5.32Z" />
+    <path {...s} d="M77.53,106.45c-.16.54-.66.91-1.23.91h-17.65c-.13,0-.23-.13-.19-.26l17.69-48.06c.32-.86,1.15-1.44,2.07-1.44h12.46c.72,0,1.24.7,1.03,1.39l-14.17,47.45Z" />
+    <path {...s} d="M562.28,108.5h-130.88c-2.94,0-5.32-2.38-5.32-5.32v-44.82c0-2.94,2.38-5.32,5.32-5.32h93.66c2.11,0,4.09,1.04,5.28,2.78l34.62,47.59c1.48,2.16-.06,5.1-2.68,5.1Z" />
+    <polyline {...s} points="619.35 205.14 591.33 205.14 589.33 224.3" />
+    <line {...s} x1="104.99" y1="200.05" x2="37.51" y2="200.05" /><line {...s} x1="619.63" y1="200.05" x2="518.99" y2="200.05" />
+    <line {...s} x1="440.08" y1="200.05" x2="187.9" y2="200" /><line {...s} x1="581.32" y1="133.38" x2="28.93" y2="133.32" />
+    <line {...s} x1="581.32" y1="144.24" x2="26.65" y2="144.19" /><line {...s} x1="516.42" y1="53.32" x2="516.42" y2="108.79" />
+    <line {...s} x1="518.71" y1="53.32" x2="518.71" y2="108.79" />
+    <path {...s} d="M419.05,42.2v132.06l25.32,10.29h54.04c7.87,0,15.04,4.5,18.47,11.57l3.54,7.3,11.44,26.3,49.73-6.86v-107.06c0-4.39-1.31-8.68-3.77-12.32l-49.68-61.29" />
+    <polyline {...s} points="111.56 42.17 88.12 115.94 80.11 120.51 80.11 224.87" />
+    <polyline {...s} points="51.24 224.87 51.24 207.72 38.66 207.72" />
+    <rect {...s} x="428.93" y="18.15" width="5.03" height="24.05" />
+    <path {...s} d="M527.86,108.74h3.29s5.86-2.53,5.86-11.68-5.72-12.58-5.72-12.58h-3.43v24.26Z" />
+    <circle {...s} cx="426.66" cy="185.72" r="5.99" /><rect {...s} x="66.39" y="190.85" width="13.72" height="5.15" />
+    <rect {...s} x="81.26" y="7.29" width="207" height="8.01" />
+    <path {...s} d="M399.19,23.3h-107.5V1h85.2c12.32,0,22.3,9.98,22.3,22.3h0Z" />
+    <path {...s} d="M604.6,196.85h-5.47c-1.61,0-2.66-1.7-1.94-3.14l3.9-7.79c.85-1.71,2.6-2.79,4.51-2.79h3.67c1.2,0,2.08,1.13,1.79,2.29l-1.99,7.94c-.51,2.05-2.35,3.49-4.47,3.49Z" />
+    <line {...s} x1="621.4" y1="180.84" x2="617.79" y2="200.28" />
+    <path {...s} d="M533.23,42.2l57.82,70.02s4,6.29,10.29,6.29h10.44" /><path {...s} d="M547.95,59.93l57.82,70.02s4,6.29,10.29,6.29h9.3" />
+    <line {...s} x1="598.19" y1="111.36" x2="590.33" y2="111.36" />
+    <rect {...sf} x="249.5" y="93.03" width="147" height="107" />
+    <path {...s} d="M301.01,154.84v-43.25h-19.08v43.25c-3.86,2.9-6.36,7.52-6.36,12.72,0,8.78,7.12,15.9,15.9,15.9s15.9-7.12,15.9-15.9c0-5.2-2.5-9.82-6.36-12.72Z" />
+    <rect {...fl} x="285.75" y="143.75" width="11.45" height="7.41" /><rect {...fl} x="285.75" y="153.16" width="11.45" height="7.41" />
+    <rect {...fl} x="285.75" y="134.3" width="11.45" height="7.41" />
+    <path {...fl} d="M295.2,126.85v3.41h-7.45v-3.41h7.45M297.2,124.85h-11.45v7.41h11.45v-7.41h0Z" />
+    <path {...fl} d="M295.2,117.4v3.41h-7.45v-3.41h7.45M297.2,115.4h-11.45v7.41h11.45v-7.41h0Z" />
+    <circle {...fl} cx="291.47" cy="167.56" r="12.09" />
+  </g>;
+};
+const Compass = ({hdg,hdgDeg,off}) => {
+  const c=off?AMBER_DIM:AMBER_MID;
+  return <g>
+    <circle cx="135.19" cy="148" r="38" fill={off?"none":BG_FILL} stroke={c} strokeMiterlimit={10} strokeWidth={0.6} vectorEffect="non-scaling-stroke" />
+    {[0,90,180,270].map(a=>{const r=a*Math.PI/180;return <line key={a} x1={135.19+Math.sin(r)*34} y1={148-Math.cos(r)*34} x2={135.19+Math.sin(r)*38} y2={148-Math.cos(r)*38} stroke={c} strokeWidth={0.4} vectorEffect="non-scaling-stroke" />;})}
+    {!off&&<g transform={`rotate(${hdgDeg}, 135.19, 148)`}><polygon points="125 153 142 130 142.3 170 135 155 125 153" fill={BG_FILL} stroke={c} strokeMiterlimit={10} strokeWidth={0.6} vectorEffect="non-scaling-stroke" /></g>}
+    <text x="135.19" y="96" fill={off?AMBER_DIM:AMBER_HI} fontSize="20" fontFamily={PX} textAnchor="middle" letterSpacing="0.12em">{off?"--":hdg}</text>
+    <text x="135.19" y="107" fill={off?AMBER_DIM:AMBER_MID} fontSize="7" fontFamily={MONO} fontWeight={300} textAnchor="middle" letterSpacing="0.12em">{off?"---°":`${String(Math.round(hdgDeg)).padStart(3,"0")}°`}</text>
+  </g>;
+};
+
+const Dashboard = ({d,wf,sub,fb}) => {
+  const vOff=!sub.victron,sOff=!sub.sensors,aOff=!sub.spotify;
+  const rearScale=0.52,rearX=REAR_VAN_CX-(273*0.52)/2,rearY=GROUND_Y-280*0.52;
+  const sideScale=0.36,sideX=SIDE_VAN_CX-(652*0.36)/2,sideY=GROUND_Y-280*0.36;
+  return <g>
+    <AlertBar sub={sub} />
+    <text x={15} y={20} fill={AMBER_HI} fontSize="14" fontFamily={PX} letterSpacing="0.15em">YoshiOS</text>
+    <text x={W-15} y={20} fill={AMBER_HI} fontSize="10" fontFamily={PX} textAnchor="end" letterSpacing="0.1em">{d.time}  {d.date}</text>
+    {mqttConnected&&<text x={W-15} y={9} fill="#4a7" fontSize="5.5" fontFamily={PX} textAnchor="end" letterSpacing="0.12em">CERBO_GX</text>}
+    <line x1={10} y1={28} x2={LEFT_PANEL_W-10} y2={28} stroke={AMBER_DIM} strokeWidth={0.2} />
+    <BatteryIcon x={18} y={36} /><SunIcon x={58} y={35} />
+    <BarGauge val={d.batPct} x={18} y={50} w={20} h={122} off={vOff} />
+    <BarGauge val={d.solPct} x={58} y={50} w={20} h={122} off={vOff} />
+    <Num x={28} y={184} val={vOff?"—":`${d.batPct}`} maxCh={3} size={11} color={vOff?AMBER_DIM:AMBER_HI} anchor="middle" weight={500} />
+    <text x={42} y={184} fill={AMBER_DIM} fontSize="7" fontFamily={PX}>%</text>
+    <Num x={68} y={184} val={vOff?"—":`${d.solPct}`} maxCh={3} size={11} color={vOff?AMBER_DIM:AMBER_HI} anchor="middle" weight={500} />
+    <text x={82} y={184} fill={AMBER_DIM} fontSize="7" fontFamily={PX}>%</text>
+    <text x={96} y={48} fill={vOff?AMBER_DIM:AMBER} fontSize="7" fontFamily={PX} letterSpacing="0.18em">CHARGE</text>
+    <Num x={96} y={61} val={vOff?"— / — Ah":`${d.chAh} / ${d.totAh} Ah`} maxCh={14} size={10} color={vOff?AMBER_DIM:AMBER_HI} weight={400} />
+    <text x={96} y={80} fill={vOff?AMBER_DIM:AMBER} fontSize="7" fontFamily={PX} letterSpacing="0.18em">LINE / LOAD</text>
+    <Num x={96} y={93} val={vOff?"+— / −— W":`+${d.solW} / ${d.loadW} W`} maxCh={18} size={10} color={vOff?AMBER_DIM:AMBER_HI} weight={400} />
+    <OilIcon x={96} y={110} />
+    <Num x={114} y={120} val={sOff?"—%":`${d.oilPct}%`} maxCh={4} size={8} color={sOff?AMBER_DIM:AMBER_MID} weight={300} />
+    <Num x={114} y={131} val={sOff?"—L":`${d.oilL}L`} maxCh={5} size={8} color={sOff?AMBER_DIM:AMBER_MID} weight={300} />
+    <TempIcon x={96} y={142} />
+    <Num x={114} y={153} val={sOff?"—°":`${d.engF}°`} maxCh={5} size={8} color={sOff?AMBER_DIM:AMBER_MID} weight={300} />
+    <Num x={114} y={164} val={sOff?"—%":`${d.hum}%`} maxCh={4} size={8} color={sOff?AMBER_DIM:AMBER_MID} weight={300} />
+    <text x={130} y={164} fill={AMBER_DIM} fontSize="5" fontFamily={PX} letterSpacing="0.12em">RH</text>
+    {/* Yoshi egg — barely visible, tucked in the space between vans */}
+    <YoshiEgg x={520} y={50} />
+
+    <g transform={`translate(${rearX},${rearY}) scale(${rearScale})`}>
+      <g transform={`rotate(${sOff?0:d.roll}, 135, 280)`}><VanRear off={sOff} /><Compass hdg={d.hdg} hdgDeg={d.hdgDeg} off={sOff} /></g></g>
+    <g transform={`translate(${sideX},${sideY}) scale(${sideScale})`}>
+      <g transform={`rotate(${sOff?0:d.pitch}, 310, 280)`}><VanSide off={sOff} />
+        <text x="348" y="148" fill={sOff?AMBER_DIM:AMBER_HI} fontSize="26" fontFamily={PX} letterSpacing="0.08em">{sOff?"—°":`${d.ambF}°`}</text>
+        <text x="348" y="162" fill={AMBER_DIM} fontSize="8" fontFamily={PX} letterSpacing="0.15em">EXT</text>
+      </g></g>
+    <line x1={LEFT_PANEL_W} y1={GROUND_Y} x2={W-10} y2={GROUND_Y} stroke={AMBER_MID} strokeWidth={1} />
+    <g transform={`rotate(${sOff?0:-d.roll}, ${REAR_VAN_CX}, ${GROUND_Y+6})`}>
+      <line x1={REAR_VAN_CX-80} y1={GROUND_Y+6} x2={REAR_VAN_CX+80} y2={GROUND_Y+6} stroke={AMBER} strokeWidth={0.6} strokeDasharray="4 4" /></g>
+    <g transform={`rotate(${sOff?0:-d.pitch}, ${SIDE_VAN_CX}, ${GROUND_Y+6})`}>
+      <line x1={SIDE_VAN_CX-140} y1={GROUND_Y+6} x2={SIDE_VAN_CX+140} y2={GROUND_Y+6} stroke={AMBER} strokeWidth={0.6} strokeDasharray="4 4" /></g>
+    <Num x={REAR_VAN_CX} y={GROUND_Y+16} val={sOff?"—°":`${d.roll>0?"+":""}${d.roll}°`} maxCh={6} size={8} color={sOff?AMBER_DIM:AMBER} anchor="middle" weight={400} font={PX} />
+    <text x={REAR_VAN_CX} y={GROUND_Y+24} fill={AMBER_DIM} fontSize="5" fontFamily={PX} textAnchor="middle" letterSpacing="0.15em">ROLL</text>
+    <Num x={SIDE_VAN_CX} y={GROUND_Y+16} val={sOff?"—°":`${d.pitch>0?"+":""}${d.pitch}°`} maxCh={6} size={8} color={sOff?AMBER_DIM:AMBER} anchor="middle" weight={400} font={PX} />
+    <text x={SIDE_VAN_CX} y={GROUND_Y+24} fill={AMBER_DIM} fontSize="5" fontFamily={PX} textAnchor="middle" letterSpacing="0.15em">PITCH</text>
+    {/* Audio strip */}
+    <line x1={10} y1={AUDIO_Y} x2={W-10} y2={AUDIO_Y} stroke={AMBER_DIM} strokeWidth={0.2} />
+    <text x={15} y={AUDIO_Y+12} fill={AMBER_DIM} fontSize="6.5" fontFamily={PX} letterSpacing="0.18em">AUDIO_SOURCE</text>
+    <text x={15} y={AUDIO_Y+25} fill={aOff?AMBER_DIM:AMBER_HI} fontSize="10" fontFamily={PX} letterSpacing="0.1em">{aOff?"OFFLINE":d.src.toUpperCase()}</text>
+    <text x={175} y={AUDIO_Y+12} fill={AMBER_DIM} fontSize="6.5" fontFamily={PX} letterSpacing="0.18em">NOW_PLAYING</text>
+    <text x={175} y={AUDIO_Y+25} fill={aOff?AMBER_DIM:AMBER} fontSize="10" fontFamily={MONO} fontWeight={400}>{aOff?"—":d.artist}</text>
+    <text x={175} y={AUDIO_Y+38} fill={aOff?AMBER_DIM:AMBER_MID} fontSize="9" fontFamily={MONO} fontWeight={300}>{aOff?"—":d.track}</text>
+    <Waveform pts={aOff?[]:wf} x={460} y={AUDIO_Y+2} w={290} h={32} />
+    <rect x={460} y={AUDIO_Y+38} width={290} height={3} fill="none" stroke={AMBER_DIM} strokeWidth={0.3} />
+    {!aOff&&<rect x={460} y={AUDIO_Y+38} width={(d.pos/d.dur)*290} height={3} fill={AMBER} />}
+    <text x={460} y={AUDIO_Y+52} fill={aOff?AMBER_DIM:AMBER_MID} fontSize="7" fontFamily={MONO} fontWeight={300} letterSpacing="0.04em">{aOff?"—:—":`${fmtT(d.pos)}`}</text>
+    <text x={750} y={AUDIO_Y+52} fill={aOff?AMBER_DIM:AMBER_MID} fontSize="7" fontFamily={MONO} fontWeight={300} textAnchor="end">{aOff?"—:—":`${fmtT(d.dur)}`}</text>
+    <g transform={`translate(${W-50}, ${AUDIO_Y+46})`}><SpeakerIcon x={0} y={0} vol={d.vol} />
+      <text x={20} y={8} fill={AMBER_HI} fontSize={fb.volP?"12":"9"} fontFamily={PX} style={{transition:"font-size 0.15s ease-out"}}>{d.vol}</text></g>
+  </g>;
+};
+
+// ═══ MAP ═══
+const MapScreen = ({d,sub}) => {
+  const [pan,setPan]=useState("auto");const [zm,setZm]=useState(14);const [zF,setZF]=useState(false);const noGps=!sub.gps;
+  useEffect(()=>{const h=e=>{if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key))setPan("manual");
+    if(e.key==="+"||e.key==="="){setZm(z=>Math.min(z+1,18));setZF(true);setTimeout(()=>setZF(false),1000);}
+    if(e.key==="-"){setZm(z=>Math.max(z-1,5));setZF(true);setTimeout(()=>setZF(false),1000);}};
+    window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h);},[]);
+  useEffect(()=>{if(pan!=="manual")return;const t=setTimeout(()=>setPan("auto"),10000);return()=>clearTimeout(t);},[pan]);
+  return <g>
+    {Array.from({length:22},(_,i)=><line key={`h${i}`} x1={0} y1={i*14} x2={W} y2={i*14} stroke={AMBER_DIM} strokeWidth={0.06} />)}
+    {Array.from({length:30},(_,i)=><line key={`v${i}`} x1={i*30} y1={0} x2={i*30} y2={H} stroke={AMBER_DIM} strokeWidth={0.06} />)}
+    <line x1={100} y1={80} x2={700} y2={80} stroke={AMBER_MID} strokeWidth={0.8} />
+    <line x1={100} y1={80} x2={100} y2={260} stroke={AMBER_MID} strokeWidth={0.6} />
+    <line x1={300} y1={0} x2={300} y2={H} stroke={AMBER_MID} strokeWidth={0.8} />
+    <line x1={500} y1={60} x2={500} y2={220} stroke={AMBER_MID} strokeWidth={0.6} />
+    <line x1={200} y1={160} x2={650} y2={160} stroke={AMBER_MID} strokeWidth={0.6} />
+    <text x={380} y={75} fill={AMBER_DIM} fontSize="5.5" fontFamily={PX} textAnchor="middle" letterSpacing="0.15em">FLATBUSH AVE</text>
+    <text x={310} y={140} fill={AMBER_DIM} fontSize="5.5" fontFamily={PX} transform="rotate(-90,310,140)" letterSpacing="0.15em">OCEAN AVE</text>
+    {!noGps&&<g><circle cx={300} cy={160} r={3.5} fill={AMBER_HI} opacity={0.9}><animate attributeName="opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite" /></circle>
+      <circle cx={300} cy={160} r={6} fill="none" stroke={AMBER} strokeWidth={0.4} opacity={0.3}>
+        <animate attributeName="r" values="6;11;6" dur="1.5s" repeatCount="indefinite" /><animate attributeName="opacity" values="0.3;0;0.3" dur="1.5s" repeatCount="indefinite" /></circle></g>}
+    {noGps&&<g><rect x={W/2-75} y={H/2-13} width={150} height={26} fill={BG} fillOpacity={0.9} stroke={AMBER} strokeWidth={0.4} />
+      <text x={W/2} y={H/2+4} fill={AMBER_HI} fontSize="9" fontFamily={PX} textAnchor="middle" letterSpacing="0.12em">NO GPS — ACQUIRING</text></g>}
+    <rect x={0} y={0} width={W} height={22} fill={BG} fillOpacity={0.9} />
+    <text x={15} y={15} fill={AMBER_HI} fontSize="13" fontFamily={PX} letterSpacing="0.12em">YoshiOS</text>
+    {noGps?<text x={W/2} y={15} fill={AMBER_HI} fontSize="8" fontFamily={PX} textAnchor="middle" letterSpacing="0.1em">⚠ NO GPS<animate attributeName="opacity" values="1;0.3;1" dur="1s" repeatCount="indefinite" /></text>:
+      <text x={W/2} y={15} fill={AMBER} fontSize="8" fontFamily={PX} textAnchor="middle" letterSpacing="0.08em">→ FLATBUSH AVE • 0.2 MI</text>}
+    <text x={W-15} y={15} fill={zF?AMBER_HI:AMBER_DIM} fontSize="7" fontFamily={PX} textAnchor="end" letterSpacing="0.1em" style={{transition:"fill 0.3s"}}>Z{zm}</text>
+    <text x={W-50} y={15} fill={pan==="manual"?AMBER:AMBER_DIM} fontSize="6" fontFamily={PX} textAnchor="end" letterSpacing="0.1em">
+      {pan==="manual"?"◎ MANUAL":"◎ AUTO"}{pan==="manual"&&<animate attributeName="opacity" values="1;0.4;1" dur="1s" repeatCount="indefinite" />}</text>
+    <rect x={0} y={H-22} width={W} height={22} fill={BG} fillOpacity={0.9} />
+    <text x={15} y={H-7} fill={AMBER_HI} fontSize="8" fontFamily={PX} letterSpacing="0.08em">{d.hdg} {String(Math.round(d.hdgDeg)).padStart(3,"0")}°</text>
+    <text x={W/2} y={H-7} fill={AMBER} fontSize="8" fontFamily={PX} textAnchor="middle" letterSpacing="0.08em">ETA 4:52 PM • 2.1 MI</text>
+    <text x={W-15} y={H-7} fill={AMBER} fontSize="8" fontFamily={PX} textAnchor="end" letterSpacing="0.08em">34 MPH</text>
+  </g>;
+};
+const MusicScreen = ({d,wf,sub,fb}) => {
+  const aOff=!sub.spotify; const sources=["Radio","Cass","BT 1","BT 2","AUX","Spotify"];
+  return <g>
+    <text x={15} y={20} fill={AMBER_HI} fontSize="14" fontFamily={PX} letterSpacing="0.15em">YoshiOS</text>
+    <text x={W-15} y={20} fill={AMBER_DIM} fontSize="9" fontFamily={PX} textAnchor="end" letterSpacing="0.1em">{d.time}</text>
+    <line x1={10} y1={28} x2={W-10} y2={28} stroke={AMBER_DIM} strokeWidth={0.2} />
+    {fb.srcF&&<g><rect x={W/2-55} y={36} width={110} height={20} fill={AMBER_HI} rx={1} />
+      <text x={W/2} y={50} fill={BG} fontSize="10" fontFamily={PX} textAnchor="middle" letterSpacing="0.1em">{fb.srcF}</text></g>}
+    <text x={30} y={46} fill={AMBER_DIM} fontSize="6.5" fontFamily={PX} letterSpacing="0.18em">AUD_SPECTRUM</text>
+    <Waveform pts={aOff?[]:wf} x={30} y={52} w={460} h={70} />
+    {aOff&&<text x={260} y={90} fill={AMBER_DIM} fontSize="9" fontFamily={PX} textAnchor="middle" letterSpacing="0.12em">NO AUDIO</text>}
+    <text x={520} y={46} fill={AMBER_DIM} fontSize="6.5" fontFamily={PX} letterSpacing="0.18em">NOW_PLAYING</text>
+    <text x={520} y={62} fill={aOff?AMBER_DIM:AMBER_HI} fontSize="13" fontFamily={PX} letterSpacing="0.08em">{aOff?"—":d.artist.toUpperCase()}</text>
+    <text x={520} y={80} fill={aOff?AMBER_DIM:AMBER} fontSize="11" fontFamily={PX} letterSpacing="0.06em">{aOff?"—":d.track.toUpperCase()}</text>
+    <text x={520} y={100} fill={AMBER_DIM} fontSize="6" fontFamily={PX} letterSpacing="0.18em">SOURCE</text>
+    <text x={520} y={114} fill={aOff?AMBER_DIM:AMBER} fontSize="9" fontFamily={PX} letterSpacing="0.1em">{aOff?"OFFLINE":d.src.toUpperCase()}</text>
+    {!aOff&&<g transform="translate(520,122)">{d.playing?<g><rect x={0} y={0} width={3.5} height={9} fill={AMBER_HI} /><rect x={6} y={0} width={3.5} height={9} fill={AMBER_HI} />
+      <text x={16} y={7} fill={AMBER_MID} fontSize="6" fontFamily={PX} letterSpacing="0.15em">PLAYING</text></g>:
+      <g><polygon points="0,0 8,4.5 0,9" fill={AMBER_HI} /><text x={14} y={7} fill={AMBER_MID} fontSize="6" fontFamily={PX} letterSpacing="0.15em">PAUSED</text></g>}</g>}
+    <rect x={30} y={168} width={W-60} height={4} fill="none" stroke={AMBER_DIM} strokeWidth={0.3} />
+    {!aOff&&<rect x={30} y={168} width={(d.pos/d.dur)*(W-60)} height={4} fill={AMBER} />}
+    <text x={30} y={184} fill={aOff?AMBER_DIM:AMBER_MID} fontSize="7" fontFamily={MONO} fontWeight={300}>{aOff?"—:—":fmtT(d.pos)}</text>
+    <text x={W-30} y={184} fill={aOff?AMBER_DIM:AMBER_MID} fontSize="7" fontFamily={MONO} fontWeight={300} textAnchor="end">{aOff?"—:—":fmtT(d.dur)}</text>
+    <g transform="translate(30,198)"><SpeakerIcon x={0} y={0} vol={d.vol} />
+      <text x={20} y={8} fill={AMBER_HI} fontSize={fb.volP?"12":"9"} fontFamily={PX} style={{transition:"font-size 0.15s ease-out"}}>{d.vol}</text>
+      <rect x={50} y={2} width={140} height={3} fill="none" stroke={AMBER_DIM} strokeWidth={0.3} />
+      <rect x={50} y={2} width={(d.vol/100)*140} height={3} fill={AMBER} /></g>
+    <text x={30} y={228} fill={AMBER_DIM} fontSize="6" fontFamily={PX} letterSpacing="0.15em">AUD_SOURCE</text>
+    <g transform="translate(30,234)">{sources.map((s,i)=>{const act=d.src===s;return <g key={s} transform={`translate(${i*78},0)`}>
+      <rect x={0} y={0} width={72} height={15} fill={act?AMBER:"none"} stroke={act?AMBER:AMBER_DIM} strokeWidth={0.4} rx={1} />
+      <text x={36} y={10.5} fill={act?BG:AMBER_MID} fontSize="6.5" fontFamily={PX} textAnchor="middle" letterSpacing="0.1em">{s.toUpperCase()}</text></g>;})}</g>
+  </g>;
+};
+
+function YoshiOS() {
+  const [scr,setScr]=useState("boot");const [pendingScr,setPendingScr]=useState(null);
+  const [wiping,setWiping]=useState(false);const [pc,setPc]=useState("off");
+  const [sub,setSub]=useState({victron:true,gps:true,sensors:true,spotify:true});
+  const fb=useFeedback();const d=useSimData(sub);const wf=useWaveform(d.playing&&sub.spotify);
+  useEffect(()=>{const t1=setTimeout(()=>setPc("booting"),1500);
+    const t2=setTimeout(()=>{setPc("running");setScr("dashboard");},4000);
+    return()=>{clearTimeout(t1);clearTimeout(t2);};},[]);
+  const onWipeDone=useCallback(()=>{if(pendingScr){setScr(pendingScr);setPendingScr(null);}setWiping(false);},[pendingScr]);
+  const sw=useCallback(s=>{if(pc!=="running"||s===scr||wiping)return;
+    fb.trigger("screen",{dashboard:"HOME",map:"NAV",music:"MUSIC"}[s]);setPendingScr(s);setWiping(true);},[pc,scr,wiping,fb]);
+  useEffect(()=>{const h=e=>{
+    if(e.key==="1")sw("dashboard");if(e.key==="2")sw("map");if(e.key==="3")sw("music");
+    if(e.key==="v")setSub(s=>({...s,victron:!s.victron}));if(e.key==="g")setSub(s=>({...s,gps:!s.gps}));
+    if(e.key==="s")setSub(s=>({...s,sensors:!s.sensors}));if(e.key==="a")setSub(s=>({...s,spotify:!s.spotify}));
+    if(e.key==="w")fb.trigger("volume");if(e.key==="q")fb.trigger("source","AUX");
+  };window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h);},[sw,fb]);
+  const [dims,setDims]=useState({w:window.innerWidth,h:window.innerHeight});
+  useEffect(()=>{const r=()=>setDims({w:window.innerWidth,h:window.innerHeight});
+    window.addEventListener("resize",r);return()=>window.removeEventListener("resize",r);},[]);
+  const scale=Math.min(dims.w/W,dims.h/H),svgW=W*scale,svgH=H*scale;
+  return (
+    <div style={{background:"#0A0A06",width:"100vw",height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",userSelect:"none",overflow:"hidden"}}>
+      <div style={{position:"relative",overflow:"hidden",width:svgW,height:svgH}}>
+        <div style={{position:"absolute",inset:0,pointerEvents:"none",zIndex:10,
+          background:"repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px)"}} />
+        <div style={{position:"absolute",inset:0,pointerEvents:"none",zIndex:11,
+          background:"radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.35) 100%)"}} />
+        <DitherWipe active={wiping} onDone={onWipeDone} />
+        <svg width={svgW} height={svgH} viewBox={`0 0 ${W} ${H}`} style={{display:"block"}}>
+          <rect width={W} height={H} fill={BG} />
+          {scr==="boot"&&<BootScreen pcState={pc} />}
+          {scr==="dashboard"&&<Dashboard d={d} wf={wf} sub={sub} fb={fb} />}
+          {scr==="map"&&<MapScreen d={d} sub={sub} />}
+          {scr==="music"&&<MusicScreen d={d} wf={wf} sub={sub} fb={fb} />}
+          {fb.flash&&<g><rect x={W/2-36} y={H/2-11} width={72} height={22} fill={BG} stroke={AMBER} strokeWidth={0.5} />
+            <text x={W/2} y={H/2+4} fill={AMBER_HI} fontSize="11" fontFamily={PX} textAnchor="middle" letterSpacing="0.12em">{fb.flash}</text></g>}
+        </svg></div></div>);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<YoshiOS />);
+</script></body></html>

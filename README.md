@@ -1,2 +1,1 @@
-# codepen-copy-color
 # YoshiOS

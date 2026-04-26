@@ -1,7 +1,30 @@
 {
   "name": "yoshios",
   "version": "0.2.0",
+  "description": "YoshiOS — Yoshi's onboard computer",
   "main": "main.js",
-  "scripts": { "start": "electron ." },
-  "dependencies": { "electron": "^35.0.0", "mqtt": "^5.0.0" }
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.yoshios.app",
+    "productName": "YoshiOS",
+    "win": {
+      "target": "portable"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "fonts/**/*"
+    ]
+  },
+  "dependencies": {
+    "mqtt": "^5.0.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  }
 }
